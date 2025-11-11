@@ -1,42 +1,92 @@
-from google.adk.agents.llm_agent import Agent
-from typing import Dict
+# my_agent/agent.py
+# Complete agent.py for Day 1 + Day 2 (time tool + currency tools + calc specialist)
+
+from typing import Dict, Optional
 import datetime
 import pytz
+import requests
 
+# ADK imports
 from google.adk.agents import LlmAgent
 from google.adk.models.google_llm import Gemini
 from google.adk.tools import AgentTool
 from google.adk.code_executors import BuiltInCodeExecutor
 
-# Tool: Get current time for a given city
+# ---------------------------
+#  -- Utility / helper map --
+# ---------------------------
+# Small map for casual city names -> tz database names (extend as needed)
+CITY_MAP = {
+    "paris": "Europe/Paris",
+    "kolkata": "Asia/Kolkata",
+    "mumbai": "Asia/Kolkata",
+    "new york": "America/New_York",
+    "nyc": "America/New_York",
+    "london": "Europe/London",
+    "tokyo": "Asia/Tokyo",
+    "los angeles": "America/Los_Angeles",
+    "sf": "America/Los_Angeles",
+    "san francisco": "America/Los_Angeles",
+}
+
+# ---------------------------
+#  -- Day 1: Time tool --
+# ---------------------------
 def get_current_time(city: str) -> Dict[str, str]:
     """
-    Returns the current time in a specified city using the pytz library.
-    If the city is invalid, returns an error message.
+    Return current time for a city. Accepts casual names (e.g. 'Paris')
+    or tz strings (e.g. 'Europe/Paris'). Tries:
+      1) CITY_MAP lookup (casual names)
+      2) If input contains '/', treat as tz string and use pytz
+      3) If tz known, try worldtimeapi (no API key) to get precise time with offset
+      4) Fallback to pytz.now if available
+    Returns:
+      {"status":"success","city":..., "time":"HH:MM AM/PM"}
+      or {"status":"error", "message": "..."}
     """
-    try:
-        # Convert user input to a valid timezone
-        timezone = pytz.timezone(city)
-        current_time = datetime.datetime.now(timezone)
-        formatted_time = current_time.strftime("%I:%M %p")
-        return {"status": "success", "city": city, "time": formatted_time}
-    except Exception:
-        return {"status": "error", "message": f"Could not find timezone for '{city}'."}
+    if not city or not city.strip():
+        return {"status": "error", "message": "No city provided."}
+    name = city.strip()
+    name_lower = name.lower()
 
-# Root agent definition
-root_agent = Agent(
-    model="gemini-2.5-flash",
-    name="root_agent",
-    description="Tells the current time in a specified city.",
-    instruction=(
-        "You are a helpful assistant that tells the current time in cities. "
-        "Use the 'get_current_time' tool for this purpose. "
-        "If the user gives a city name like 'Paris' or 'Tokyo', "
-        "convert it into a timezone string like 'Europe/Paris' or 'Asia/Tokyo'."
-    ),
-    tools=[get_current_time],
-)
+    # 1) map casual names
+    tz_name: Optional[str] = CITY_MAP.get(name_lower)
 
+    # 2) if user already provided tz string format
+    if not tz_name and "/" in name:
+        tz_name = name
+
+    # 3) If we have a tz name, try worldtimeapi first (better offset handling)
+    if tz_name:
+        try:
+            # worldtimeapi returns ISO datetime with offset
+            resp = requests.get(f"https://worldtimeapi.org/api/timezone/{tz_name}", timeout=6)
+            if resp.status_code == 200:
+                data = resp.json()
+                dt_iso = data.get("datetime")
+                if dt_iso:
+                    # Parse ISO timestamp safely
+                    dt = datetime.datetime.fromisoformat(dt_iso)
+                    return {"status": "success", "city": name, "time": dt.strftime("%I:%M %p")}
+            # fallback to pytz if worldtimeapi fails
+        except Exception:
+            pass
+
+        # fallback: use pytz
+        try:
+            tz = pytz.timezone(tz_name)
+            now = datetime.datetime.now(tz)
+            return {"status": "success", "city": name, "time": now.strftime("%I:%M %p")}
+        except Exception as e:
+            return {"status": "error", "message": f"Could not determine time for '{name}' ({e})"}
+
+    # 4) Nothing found
+    return {"status": "error", "message": f"Unknown city or timezone '{name}'. Try 'Paris' or 'Europe/Paris'."}
+
+
+# ---------------------------
+#  -- Day 2: Business Tools --
+# ---------------------------
 def get_fee_for_payment_method(method: str) -> Dict[str, object]:
     """
     Simulated fee lookup.
@@ -138,3 +188,6 @@ root_agent = LlmAgent(
     # Tools: function tools and the enhanced agent as a callable tool
     tools=[get_current_time, get_fee_for_payment_method, get_exchange_rate, AgentTool(agent=enhanced_currency_agent)],
 )
+
+# Note: ADK looks for a variable called `root_agent` as the entrypoint for the agent.
+# This file defines `root_agent` as the multi-tool LlmAgent.
